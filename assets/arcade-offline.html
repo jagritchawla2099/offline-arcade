@@ -1,0 +1,585 @@
+<!doctype html>
+<!-- Offline Arcade: four mini games, served by /arcade-sw.js when a page can't load.
+     Self-contained on purpose: nothing else is reachable when this shows.
+     CUSTOMIZE: the site name in .logo, the colours in :root, the text in COPY.
+     After editing, bump VERSION in /arcade-sw.js so returning visitors get the new copy. -->
+<html lang="en" data-mode="offline" data-arcade>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>You're offline</title>
+<style>
+  /* CUSTOMIZE: page background, text and pixel colour, accent (logo dot, button hover), text on accent.
+     Keep --ink and --accent readable on --bg, and --on-accent readable on --accent, in both blocks. */
+  :root { --bg: #f7f7f7; --ink: #535353; --accent: #2f6fed; --on-accent: #ffffff; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #202124; --ink: #acacac; } }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; -webkit-font-smoothing: antialiased; }
+  main { max-width: 760px; min-height: 100%; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 24px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; min-height: 40px; }
+  .logo { font-weight: 700; font-size: 18px; letter-spacing: .08em; color: inherit; text-decoration: none; text-transform: uppercase; }
+  .logo span { color: var(--accent); }
+  #notice { display: flex; align-items: center; gap: 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  button { font: inherit; color: inherit; background: none; border: 2px solid var(--ink); padding: 6px 12px; cursor: pointer; text-transform: uppercase; letter-spacing: .06em; }
+  button:hover, button:focus-visible, #go { background: var(--ink); color: var(--bg); outline: none; }
+  #go:hover, #go:focus-visible { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  [hidden] { display: none !important; }
+  h1 { font-size: clamp(28px, 8vw, 44px); line-height: 1.1; letter-spacing: .04em; }
+  #sub { margin-top: 8px; max-width: 48ch; }
+  #grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 24px; }
+  .card { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 16px; text-align: left; text-transform: none; letter-spacing: 0; transition: transform .1s, box-shadow .1s; }
+  .card:hover, .card:focus-visible { background: none; color: inherit; transform: translate(-3px, -3px); box-shadow: 3px 3px 0 var(--ink); }
+  .card canvas { height: 40px; width: auto; image-rendering: pixelated; margin-bottom: 8px; }
+  .card b { font-size: 16px; letter-spacing: .08em; text-transform: uppercase; }
+  .card small { font-size: 12px; }
+  #play { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; cursor: pointer; }
+  #screen { display: block; image-rendering: pixelated; }
+  @media (max-width: 420px) { .card { padding: 12px; } #grid { gap: 8px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <!-- CUSTOMIZE: your site name. The optional <span> is drawn in the accent colour. -->
+    <a class="logo" href="/">Your Site<span>.</span></a>
+    <div id="notice" role="status"><span id="notice-text"></span><button id="go" hidden></button></div>
+  </header>
+  <section id="menu">
+    <h1 id="title"></h1>
+    <p id="sub"></p>
+    <div id="grid"></div>
+  </section>
+  <section id="play" hidden>
+    <div class="bar"><button id="back">&lt; Games</button><span id="hint"></span></div>
+    <div id="stage"><canvas id="screen" aria-label="Game screen"></canvas></div>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+  // CUSTOMIZE: [heading, sub-heading, status text, button label]
+  const COPY = {
+    offline: ["NO INTERNET.", "Pick a game while you wait. We'll let you know when you're back online.", "Offline"],
+    slow: ["SLOW CONNECTION.", "Your page is still loading. Pick a game, we'll let you know when it's ready.", "Loading your page..."],
+    online: ["BACK ONLINE.", "Your connection is back.", "You're back online.", "Continue"],
+    ready: ["PAGE READY.", "Your page has finished loading.", "Your page is ready.", "Open page"],
+  };
+  const SELF = "/arcade-offline.html";
+
+  const $ = (s) => document.querySelector(s);
+  const touch = matchMedia("(pointer: coarse)").matches;
+  const dark = matchMedia("(prefers-color-scheme: dark)");
+  let INK, BG;
+  const setColors = () => {
+    const css = getComputedStyle(document.documentElement);
+    INK = css.getPropertyValue("--ink").trim();
+    BG = css.getPropertyValue("--bg").trim();
+  };
+  setColors();
+
+  // ---- Pixel drawing ----
+  const rand = (n) => Math.random() * n;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const pad = (n) => String(n).padStart(5, "0");
+  const rect = (c, x, y, w, h) => c.fillRect(Math.round(x), Math.round(y), w, h);
+  const box = (c, x, y, w, h) => { rect(c, x, y, w, 1); rect(c, x, y + h - 1, w, 1); rect(c, x, y, 1, h); rect(c, x + w - 1, y, 1, h); };
+  function sprite(c, rows, x, y) {
+    x = Math.round(x); y = Math.round(y);
+    for (let j = 0; j < rows.length; j++)
+      for (let i = 0; i < rows[j].length; i++) if (rows[j][i] === "#") c.fillRect(x + i, y + j, 1, 1);
+  }
+  // 3x5 pixel font, 15 bits per glyph, row by row.
+  const GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.:!-'";
+  const BITS = ("111101101101111 010110010010111 111001111100111 111001111001111 101101111001001 111100111001111 " +
+    "111100111101111 111001001001001 111101111101111 111101111001111 010101111101101 110101110101110 " +
+    "011100100100011 110101101101110 111100110100111 111100110100100 011100101101011 101101111101101 " +
+    "111010010010111 001001001101010 101101110101101 100100100100111 101111111101101 110101101101101 " +
+    "010101101101010 110101110100100 010101101110011 110101110101101 011100010001110 111010010010010 " +
+    "101101101101111 101101101101010 101101111111101 101101010101101 101101010010010 111001010100111 " +
+    "000000000000010 000010000010000 010010010000010 000000111000000 010010000000000").split(" ");
+  function text(c, str, x, y, align) {
+    str = String(str).toUpperCase();
+    const w = str.length * 4 - 1;
+    if (align === "center") x -= Math.floor(w / 2);
+    else if (align === "right") x -= w;
+    for (let i = 0; i < str.length; i++) {
+      const b = BITS[GLYPHS.indexOf(str[i])];
+      if (b) for (let p = 0; p < 15; p++) if (b[p] === "1") c.fillRect(x + i * 4 + (p % 3), y + ((p / 3) | 0), 1, 1);
+    }
+  }
+
+  // ---- Sprites ----
+  const ROBOT = [
+    "......#.....",
+    ".......#....",
+    "..########..",
+    ".##########.",
+    ".#####.##.#.",
+    ".#####.##.#.",
+    ".##########.",
+    "..########..",
+    "....####....",
+    "..########..",
+    ".#.######.#.",
+    "....####....",
+  ];
+  const LEGS = [
+    ["....#..#....", "...##..##..."],
+    ["...#....#...", "..##....##.."],
+  ];
+  const CONE = [
+    "...#...",
+    "..###..",
+    "..#.#..",
+    "..###..",
+    ".#####.",
+    ".#...#.",
+    ".#####.",
+    "#######",
+    "#######",
+  ];
+  const CRATE = [
+    "########",
+    "##....##",
+    "#.#..#.#",
+    "#..##..#",
+    "#..##..#",
+    "#.#..#.#",
+    "##....##",
+    "########",
+  ];
+  const CLOUD = [
+    ".....####.....",
+    "...##....##...",
+    ".##........###",
+    "##############",
+  ];
+  const BIRD = [
+    [
+      "##.........",
+      "###.####...",
+      ".#######.#.",
+      "..#####.##.",
+      "..#########",
+      "...######..",
+      "....###....",
+    ],
+    [
+      "....####...",
+      "...####.#..",
+      "..######.#.",
+      ".###########",
+      "####.####..",
+      "###.####...",
+      "##.........",
+    ],
+  ];
+  const APPLE = [
+    "...#...",
+    "..#....",
+    ".#####.",
+    "#######",
+    "#######",
+    ".#####.",
+    "..###..",
+  ];
+  const SNAKE_ICON = [
+    "###.###.###......#.",
+    "###.###.###.....###",
+    "###.###.###......#.",
+    "...................",
+    "........###........",
+    "........###........",
+    "........###........",
+    "...................",
+    "........###.###....",
+    "........###.###....",
+    "........###.###....",
+  ];
+  const BRICKS_ICON = [
+    "#####.#####.#####",
+    "#####.#####.#####",
+    ".................",
+    "#####.#####......",
+    "#####.#####......",
+    ".................",
+    "..........##.....",
+    "..........##.....",
+    ".................",
+    ".................",
+    "......######.....",
+  ];
+
+  // ---- Games ----
+  // Each game: W/H (logical pixels), reset(), update(dt), draw(c), score, dead.
+  // Optional: press() for jump/flap, dir(dx, dy) for steering, pointer(x) for paddles.
+  const HUD = 9; // top rows reserved for the score
+
+  const Runner = {
+    id: "runner", name: "Runner", hint: touch ? "Tap to jump" : "Space or up to jump",
+    W: matchMedia("(max-width: 600px)").matches ? 180 : 240, H: 90, GROUND: 80, icon: ROBOT.concat(LEGS[0]),
+    reset() {
+      this.y = 0; this.vy = 0; this.speed = 110; this.dist = 0; this.t = 0; this.buffer = 0;
+      this.obs = []; this.next = 140; this.dead = false;
+      this.clouds = [[50, 22], [150, 34], [220, 18]];
+      this.bumps = Array.from({ length: 24 }, () => [rand(this.W), 2 + (rand(4) | 0), 1 + (rand(3) | 0)]);
+    },
+    get score() { return Math.floor(this.dist / 10); },
+    press() { this.buffer = 0.12; },
+    spawn() {
+      const kinds = [[[CONE, 0, 0]], [[CONE, 0, 0], [CONE, 7, 0]], [[CRATE, 0, 0]], [[CRATE, 0, 0], [CRATE, 0, 8]], [[CRATE, 0, 0], [CRATE, 9, 0]]];
+      const parts = kinds[rand(this.score > 150 ? kinds.length : 3) | 0];
+      const w = Math.max(...parts.map(([s, dx]) => dx + s[0].length));
+      const h = Math.max(...parts.map(([s, , dy]) => dy + s.length));
+      this.obs.push({ x: this.W, parts, w, h });
+      this.next = this.speed * 0.6 + 40 + rand(this.speed * 0.9);
+    },
+    update(dt) {
+      this.t += dt;
+      this.speed = Math.min(260, this.speed + 3 * dt);
+      const dx = this.speed * dt;
+      this.dist += dx;
+      this.buffer -= dt;
+      if (this.buffer > 0 && this.y === 0) { this.vy = -260; this.buffer = 0; }
+      this.vy += 900 * dt;
+      this.y += this.vy * dt;
+      if (this.y >= 0) { this.y = 0; this.vy = 0; }
+      if ((this.next -= dx) <= 0) this.spawn();
+      for (const o of this.obs) o.x -= dx;
+      this.obs = this.obs.filter((o) => o.x + o.w > 0);
+      for (const c of this.clouds) if ((c[0] -= dx * 0.2) < -14) { c[0] = this.W + rand(60); c[1] = 14 + rand(26); }
+      const px = 18, py = this.GROUND - 14 + this.y + 2;
+      this.dead = this.obs.some((o) => px < o.x + o.w - 1 && px + 8 > o.x + 1 && py + 11 > this.GROUND - o.h + 1);
+    },
+    draw(c) {
+      const off = this.dist % this.W;
+      rect(c, 0, this.GROUND, this.W, 1);
+      for (const [x, dy, w] of this.bumps) rect(c, (x - off + this.W) % this.W, this.GROUND + dy, w, 1);
+      c.globalAlpha = 0.35;
+      for (const [x, y] of this.clouds) sprite(c, CLOUD, x, y);
+      c.globalAlpha = 1;
+      for (const o of this.obs) for (const [s, dx, dy] of o.parts) sprite(c, s, o.x + dx, this.GROUND - dy - s.length);
+      const legs = this.y < 0 || !this.t ? LEGS[0] : LEGS[(this.t * 12 | 0) % 2];
+      sprite(c, ROBOT.concat(legs), 16, this.GROUND - 14 + this.y);
+    },
+  };
+
+  const Snake = {
+    id: "snake", name: "Snake", hint: touch ? "Swipe to steer" : "Arrow keys to steer",
+    W: 162, H: 171, N: 20, icon: SNAKE_ICON,
+    reset() {
+      this.body = [[9, 10], [8, 10], [7, 10]]; this.d = [1, 0]; this.queue = [];
+      this.acc = 0; this.step = 0.13; this.eaten = 0; this.dead = false; this.food = this.place();
+    },
+    get score() { return this.eaten * 10; },
+    dir(dx, dy) {
+      const last = this.queue[this.queue.length - 1] || this.d;
+      if (this.queue.length > 2 || (dx === -last[0] && dy === -last[1]) || (dx === last[0] && dy === last[1])) return;
+      this.queue.push([dx, dy]);
+    },
+    place() {
+      let p;
+      do p = [rand(this.N) | 0, rand(this.N) | 0];
+      while (this.body.some((b) => b[0] === p[0] && b[1] === p[1]));
+      return p;
+    },
+    update(dt) {
+      for (this.acc += dt; this.acc >= this.step && !this.dead; this.acc -= this.step) {
+        if (this.queue.length) this.d = this.queue.shift();
+        const n = [this.body[0][0] + this.d[0], this.body[0][1] + this.d[1]];
+        const eat = n[0] === this.food[0] && n[1] === this.food[1];
+        const out = n[0] < 0 || n[1] < 0 || n[0] >= this.N || n[1] >= this.N;
+        // The tail moves out of the way this tick unless we're growing.
+        if (out || this.body.some((b, i) => (eat || i < this.body.length - 1) && b[0] === n[0] && b[1] === n[1])) { this.dead = true; return; }
+        this.body.unshift(n);
+        if (!eat) this.body.pop();
+        else {
+          this.eaten++;
+          this.step = Math.max(0.06, this.step - 0.003);
+          if (this.body.length === this.N * this.N) { this.dead = true; return; } // board full
+          this.food = this.place();
+        }
+      }
+    },
+    draw(c) {
+      box(c, 0, HUD - 1, this.W, this.H - HUD + 1);
+      const at = ([x, y]) => [1 + x * 8, HUD + y * 8];
+      if (!this.dead || (Date.now() / 250 | 0) % 2) for (const b of this.body) rect(c, ...at(b), 7, 7);
+      sprite(c, APPLE, ...at(this.food));
+    },
+  };
+
+  const Flappy = {
+    id: "flappy", name: "Flappy", hint: touch ? "Tap to flap" : "Space or up to flap",
+    W: 144, H: 200, GROUND: 188, GAP: 58, PW: 18, icon: BIRD[0],
+    reset() { this.y = 90; this.vy = 0; this.pipes = []; this.next = 40; this.passed = 0; this.t = 0; this.dist = 0; this.dead = false; },
+    get score() { return this.passed; },
+    press() { this.vy = -175; },
+    update(dt) {
+      this.t += dt;
+      this.vy = Math.min(this.vy + 560 * dt, 260);
+      this.y += this.vy * dt;
+      if (this.y < HUD) { this.y = HUD; this.vy = 0; }
+      const dx = 58 * dt;
+      this.dist += dx;
+      if ((this.next -= dx) <= 0) {
+        this.pipes.push({ x: this.W, gap: HUD + 18 + rand(this.GROUND - HUD - 36 - this.GAP) });
+        this.next = 80;
+      }
+      for (const p of this.pipes) {
+        p.x -= dx;
+        if (!p.done && p.x + this.PW < 30) { p.done = true; this.passed++; }
+      }
+      this.pipes = this.pipes.filter((p) => p.x + this.PW > -2);
+      const bx = 31, by = this.y + 1, bw = 9, bh = 5;
+      this.dead = this.y + 7 >= this.GROUND || this.pipes.some((p) =>
+        bx < p.x + this.PW && bx + bw > p.x && (by < p.gap || by + bh > p.gap + this.GAP));
+    },
+    draw(c) {
+      for (const p of this.pipes) {
+        box(c, p.x, HUD - 1, this.PW, p.gap - HUD + 1);
+        box(c, p.x - 2, p.gap - 6, this.PW + 4, 6);
+        box(c, p.x, p.gap + this.GAP, this.PW, this.GROUND - p.gap - this.GAP);
+        box(c, p.x - 2, p.gap + this.GAP, this.PW + 4, 6);
+        rect(c, p.x + 4, HUD, 1, p.gap - HUD - 6);
+        rect(c, p.x + 4, p.gap + this.GAP + 6, 1, this.GROUND - p.gap - this.GAP - 6);
+      }
+      rect(c, 0, this.GROUND, this.W, 1);
+      for (let x = -(this.dist % 12); x < this.W; x += 12) rect(c, x, this.GROUND + 4, 6, 1);
+      sprite(c, BIRD[this.vy < 0 || (this.t * 6 | 0) % 2 ? 1 : 0], 30, this.y);
+    },
+  };
+
+  const Breakout = {
+    id: "breakout", name: "Breakout", hint: touch ? "Drag to move" : "Mouse or arrows to move",
+    W: 160, H: 200, PY: 188, PW: 28, icon: BRICKS_ICON,
+    reset() { this.level = 1; this.lives = 3; this.points = 0; this.px = (this.W - this.PW) / 2; this.dead = false; this.build(); this.serve(); },
+    get score() { return this.points; },
+    build() {
+      this.bricks = [];
+      for (let r = 0; r < 5; r++) for (let col = 0; col < 8; col++) this.bricks.push({ x: 1 + col * 20, y: 22 + r * 8, w: 18, h: 5, r });
+    },
+    serve() {
+      const sp = 95 + this.level * 15;
+      this.wait = 0.6; this.vx = sp * 0.5 * (Math.random() < 0.5 ? -1 : 1); this.vy = -sp * 0.87;
+      this.bx = this.px + this.PW / 2 - 1; this.by = this.PY - 3;
+    },
+    pointer(x) { this.px = clamp(x - this.PW / 2, 0, this.W - this.PW); },
+    hit() {
+      const i = this.bricks.findIndex((b) => this.bx < b.x + b.w && this.bx + 3 > b.x && this.by < b.y + b.h && this.by + 3 > b.y);
+      if (i < 0) return false;
+      this.bricks.splice(i, 1);
+      this.points += 10;
+      return true;
+    },
+    update(dt) {
+      const move = ((held.ArrowRight || held.KeyD ? 1 : 0) - (held.ArrowLeft || held.KeyA ? 1 : 0)) * 160 * dt;
+      this.px = clamp(this.px + move, 0, this.W - this.PW);
+      if (this.wait > 0) { this.wait -= dt; this.bx = this.px + this.PW / 2 - 1; return; }
+      const steps = Math.ceil(Math.max(Math.abs(this.vx), Math.abs(this.vy)) * dt);
+      for (let s = 0; s < steps; s++) {
+        const sx = this.vx * dt / steps, sy = this.vy * dt / steps;
+        this.bx += sx;
+        if (this.bx < 0 || this.bx + 3 > this.W) { this.vx = -this.vx; this.bx = clamp(this.bx, 0, this.W - 3); }
+        else if (this.hit()) { this.vx = -this.vx; this.bx -= sx; }
+        this.by += sy;
+        if (this.by < HUD) { this.vy = Math.abs(this.vy); this.by = HUD; }
+        else if (this.hit()) { this.vy = -this.vy; this.by -= sy; }
+        if (this.vy > 0 && this.by + 3 >= this.PY && this.by + 3 <= this.PY + 3 && this.bx + 3 > this.px && this.bx < this.px + this.PW) {
+          // Where the ball lands on the paddle sets the bounce angle.
+          const sp = Math.hypot(this.vx, this.vy);
+          const a = clamp((this.bx + 1.5 - this.px - this.PW / 2) / (this.PW / 2), -1, 1) * 1.05;
+          this.vx = sp * Math.sin(a); this.vy = -sp * Math.cos(a); this.by = this.PY - 3;
+        }
+        if (this.by > this.H) {
+          if (--this.lives <= 0) { this.dead = true; return; }
+          return this.serve();
+        }
+      }
+      if (!this.bricks.length) { this.level++; this.build(); this.serve(); }
+    },
+    draw(c) {
+      rect(c, 0, HUD - 1, this.W, 1);
+      for (let i = 0; i < this.lives; i++) rect(c, 2 + i * 5, 2, 3, 3);
+      for (const b of this.bricks) b.r % 2 ? box(c, b.x, b.y, b.w, b.h) : rect(c, b.x, b.y, b.w, b.h);
+      rect(c, this.px, this.PY, this.PW, 3);
+      rect(c, this.bx, this.by, 3, 3);
+    },
+  };
+
+  const GAMES = [Runner, Snake, Flappy, Breakout];
+
+  // ---- High scores ----
+  const getHi = (g) => { try { return +localStorage.getItem("arcade-hi-" + g.id) || 0; } catch { return 0; } };
+  const setHi = (g, v) => { try { localStorage.setItem("arcade-hi-" + g.id, v); } catch {} };
+
+  // ---- Menu ----
+  function renderMenu() {
+    const grid = $("#grid");
+    grid.textContent = "";
+    for (const g of GAMES) {
+      const card = document.createElement("button");
+      card.className = "card";
+      const icon = document.createElement("canvas");
+      icon.width = g.icon[0].length; icon.height = g.icon.length;
+      const c = icon.getContext("2d");
+      c.fillStyle = INK;
+      sprite(c, g.icon, 0, 0);
+      const name = document.createElement("b"), hint = document.createElement("small"), hi = document.createElement("small");
+      name.textContent = g.name; hint.textContent = g.hint; hi.textContent = "HI " + pad(getHi(g));
+      card.append(icon, name, hint, hi);
+      card.onclick = () => open(g);
+      grid.append(card);
+    }
+  }
+
+  // ---- Game screen ----
+  const canvas = $("#screen"), ctx = canvas.getContext("2d"), stage = $("#stage");
+  const held = {};
+  let game = null, state = "ready", overAt = 0;
+
+  function open(g) {
+    game = g; state = "ready"; g.reset();
+    canvas.width = g.W; canvas.height = g.H;
+    $("#hint").textContent = g.hint;
+    $("#menu").hidden = true; $("#play").hidden = false;
+    fit();
+  }
+  function close() {
+    game = null;
+    $("#play").hidden = true; $("#menu").hidden = false;
+    renderMenu();
+  }
+  function fit() {
+    if (!game) return;
+    const w = stage.clientWidth, h = innerHeight - stage.getBoundingClientRect().top - 16;
+    const s = Math.max(1, Math.min(w / game.W, h / game.H));
+    canvas.style.width = Math.floor(game.W * s) + "px";
+    canvas.style.height = Math.floor(game.H * s) + "px";
+  }
+  function press() {
+    if (!game) return;
+    if (state === "play") return game.press && game.press();
+    if (state === "over" && performance.now() - overAt < 500) return;
+    game.reset(); state = "play";
+    if (game.press) game.press();
+  }
+
+  let last = 0;
+  function frame(t) {
+    requestAnimationFrame(frame);
+    const dt = Math.min((t - last) / 1000, 1 / 30);
+    last = t;
+    if (!game) return;
+    if (state === "play") {
+      game.update(dt);
+      if (game.dead) {
+        state = "over"; overAt = performance.now();
+        if (game.score > getHi(game)) setHi(game, game.score);
+      }
+    }
+    ctx.fillStyle = BG; ctx.fillRect(0, 0, game.W, game.H);
+    ctx.fillStyle = INK;
+    game.draw(ctx);
+    const hi = getHi(game);
+    text(ctx, (hi ? "HI " + pad(hi) + "  " : "") + pad(game.score), game.W - 2, 2, "right");
+    if (state !== "play") {
+      const lines = state === "ready"
+        ? [touch ? "TAP TO START" : "PRESS SPACE TO START"]
+        : ["GAME OVER", touch ? "TAP TO RETRY" : "SPACE TO RETRY"];
+      const w = Math.max(...lines.map((l) => l.length * 4 - 1)), y = Math.round(game.H / 2) - lines.length * 4;
+      ctx.fillStyle = BG; ctx.fillRect(Math.round((game.W - w) / 2) - 4, y - 4, w + 8, lines.length * 8 + 6);
+      ctx.fillStyle = INK;
+      lines.forEach((l, i) => text(ctx, l, Math.round(game.W / 2), y + i * 8, "center"));
+    }
+  }
+  requestAnimationFrame(frame);
+
+  // ---- Input ----
+  const DIRS = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0], KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0] };
+  addEventListener("keydown", (e) => {
+    if (!game) return;
+    if (e.code === "Escape") return close();
+    const d = DIRS[e.code];
+    if (!d && e.code !== "Space" && e.code !== "Enter") return;
+    e.preventDefault();
+    held[e.code] = true;
+    if (e.repeat) return;
+    if (state !== "play") press();
+    else if (!d || (!game.dir && d[1] < 0)) game.press && game.press();
+    if (d && game.dir) game.dir(d[0], d[1]);
+  });
+  addEventListener("keyup", (e) => { held[e.code] = false; });
+
+  let down = false, sx = 0, sy = 0;
+  const pointer = (e) => {
+    if (!game || !game.pointer) return;
+    const r = canvas.getBoundingClientRect();
+    game.pointer((e.clientX - r.left) / r.width * game.W);
+  };
+  stage.addEventListener("pointerdown", (e) => {
+    if (!game) return;
+    e.preventDefault();
+    down = true; sx = e.clientX; sy = e.clientY;
+    if (stage.setPointerCapture) stage.setPointerCapture(e.pointerId);
+    press();
+    pointer(e);
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (e.pointerType === "mouse" || down) pointer(e);
+    if (!down || !game || !game.dir || state !== "play") return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.hypot(dx, dy) < 20) return;
+    if (Math.abs(dx) > Math.abs(dy)) game.dir(Math.sign(dx), 0);
+    else game.dir(0, Math.sign(dy));
+    sx = e.clientX; sy = e.clientY;
+  });
+  addEventListener("pointerup", () => { down = false; });
+  addEventListener("pointercancel", () => { down = false; });
+  addEventListener("resize", fit);
+  $("#back").onclick = close;
+  dark.addEventListener("change", () => { setColors(); if (!game) renderMenu(); });
+
+  // ---- Connection status ----
+  let poll = 0;
+  function status(mode) {
+    const [title, sub, note, cta] = COPY[mode];
+    $("#title").textContent = title;
+    $("#sub").textContent = sub;
+    $("#notice-text").textContent = note;
+    document.title = `${note} | ${$(".logo").textContent}`;
+    $("#go").hidden = !cta;
+    $("#go").textContent = cta || "";
+    if (mode === "offline" && !poll) {
+      // onLine=false is reliable; onLine=true still needs a real request to confirm.
+      const check = () => navigator.onLine && fetch(SELF, { method: "HEAD", cache: "no-store" }).then(() => status("online"), () => {});
+      addEventListener("online", check);
+      poll = setInterval(check, 5000);
+    }
+    if (cta) clearInterval(poll);
+  }
+  $("#go").onclick = () => {
+    if (location.pathname !== SELF) return location.reload();
+    // Opened from the offline bar: go back to the page they left (same site, path only).
+    const from = new URL(new URLSearchParams(location.search).get("from") || "/", location.origin);
+    location.assign(from.origin === location.origin ? from.pathname + from.search + from.hash : "/");
+  };
+  if ("serviceWorker" in navigator) {
+    // From the worker after a slow page: "ready" (kept, opens instantly), "online"
+    // (arrived but couldn't be kept), "failed" (the connection dropped).
+    navigator.serviceWorker.onmessage = (e) => {
+      if (!e.data || e.data.url !== location.href.split("#")[0]) return;
+      status(e.data.type === "failed" ? "offline" : e.data.type);
+    };
+  }
+
+  status(document.documentElement.dataset.mode === "slow" ? "slow" : "offline");
+  renderMenu();
+})();
+</script>
+</body>
+</html>
